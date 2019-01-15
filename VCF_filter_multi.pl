@@ -13,8 +13,11 @@ my @args = @ARGV;
 my @out :shared = ();
 my ($cnt, $snp_total) :shared;
 my (@header, $pops, @order, $in_fh, $out_fh, %samples, $tot_indiv, $num_pops);
-my ($cmd, $sort, $infile, $outfile, $popmap, $minDP, $maxDP, $het, $fis);
+my ($cmd, $sort, $infile, $outfile, $popmap, $minDP, $maxDP, $het, $fis, $hwe);
 my ($cov, $tot_cov, $minGQ, $minQ, $l_maf, $g_maf, $global, $num_threads, $help);
+
+$num_threads = 1;
+
 my $x ='#';
 GetOptions (
     "in=s"          => \$infile,
@@ -24,6 +27,7 @@ GetOptions (
     "MaxDP=s"       => \$maxDP,
     "Het=f"         => \$het,
     "Fis=f"         => \$fis,
+    "phwe=f"          => \$hwe,
     "GQ=i"          => \$minGQ,
     "Q=i"           => \$minQ,
     "localMAF=f"    => \$l_maf,
@@ -53,6 +57,7 @@ my $usage =
     --Q  min quality for each SNP.
     --g  Global MAF.
     --l  Local MAF.
+    --p  p-value for hwe.
     --f  apply the filter (Ho and Fis) on each site instead of each population.
     --t  number of threads.
     --s  sort the final vcf file.
@@ -91,6 +96,7 @@ my $para  = "CMD: $abs_path ".join(' ', @args);
    $para .= sprintf "\t%-15s : %-10s\n", 'MaxDP', $maxDP if $maxDP;
    $para .= sprintf "\t%-15s : %-10s\n", $H, $het if $het;
    $para .= sprintf "\t%-15s : %-10s\n", $F, $fis if $fis;
+   $para .= sprintf "\t%-15s : %-10s\n", 'p-value for hwe test', $hwe if $hwe;
    $para .= sprintf "\t%-15s : %-10s\n", 'Global MAF', $g_maf if $g_maf;
    $para .= sprintf "\t%-15s : %-10s\n", 'Local MAF', $l_maf if $l_maf;
 use warnings;
@@ -111,7 +117,7 @@ my $head = 0;
 while (<$in_fh>) {
     #Just output number of SNPs if nothing need to be filtered.
     unless ($cov || $minGQ || $minDP || $maxDP || $het || $fis
-    || $g_maf || $l_maf || $minQ || $tot_cov) {
+    || $g_maf || $l_maf || $minQ || $tot_cov || $hwe) {
     
         print $out_fh $_;
         next if /^##|^$/;
@@ -200,9 +206,9 @@ print STDERR "\ndone.\n";
 if ($sort) {
     print STDERR "Sorting file...";
     if (substr($outfile, -2) eq 'gz') {
-        `(zgrep '^#' $outfile; zgrep -v '^#' $outfile | sort -k1,1n -k2n ) | gzip -c >$outfile.1 && mv $outfile.1 $outfile`;
+        `(zgrep '^#' $outfile; zgrep -v '^#' $outfile | sort -k1,1n -k2,2n ) | gzip -c >$outfile.1 && mv $outfile.1 $outfile`;
     } else {
-        `(grep '^#' $outfile; grep -v '^#' $outfile | sort -k1,1n -k2n) >$outfile.1 && mv $outfile.1 $outfile`;
+        `(grep '^#' $outfile; grep -v '^#' $outfile | sort -k1,1n -k2,2n) >$outfile.1 && mv $outfile.1 $outfile`;
     }
     print STDERR "done.\n";
 }
@@ -226,16 +232,20 @@ sub calc_stat {
     my $allele->{$ref} = 0;
        $allele->{$alt} = 0;
        $allele->{'het'}= 0;
+    my $obs_hets = 0;
+    my $obs_hom1 = 0;
+    my $obs_hom2 = 0;
     
     foreach my $gt (@$gts) {
     
         # unphased or phased.
-        $allele->{$ref} += 2 if ($gt eq '0/0' || $gt eq '0|0');
-        $allele->{$alt} += 2 if ($gt eq '1/1' || $gt eq '1|1');
+        if ($gt eq '0/0' || $gt eq '0|0') {$allele->{$ref} += 2; $obs_hom1++;}
+        if ($gt eq '1/1' || $gt eq '1|1') {$allele->{$alt} += 2; $obs_hom2++;}
         if ($gt eq '0/1' || $gt eq '0|1' || $gt eq '1|0') {
             $allele->{$ref}++; 
             $allele->{$alt}++;
             $allele->{'het'}++;
+            $obs_hets++;
         }
     }
     my $n    = ($allele->{$ref} + $allele->{$alt}) / 2;
@@ -245,9 +255,180 @@ sub calc_stat {
     my $Fis  = $He > 0 ? (1 - $Ho/$He) : 'NAN';
     my $flag = $p < 0.5 ? $ref : $alt;
     my $maf  = $p < 0.5 ? $p : (1 - $p);
+    my $p_hwe= 1; $p_hwe = hwe($obs_hets, $obs_hom1, $obs_hom2) if defined($hwe);
+    return($Ho, $He, $Fis, $maf, $flag, $p_hwe);
     
-    return($Ho, $He, $Fis, $maf, $flag);
+}
+
+sub hwe {
+# snphwe.pl: A Perl implementation of the fast exact Hardy-Weinberg Equilibrium 
+# test for SNPs as described in Wigginton, et al. (2005). 
+#
+# Copyright 2010 Joshua Randall
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# Author:
+#    This software was written Joshua C. Randall <jcrandall@alum.mit.edu>
+#    and is a port to Perl of algorithms implemented by others in C and R.
+#
+# Attribution:
+#    This software is based entirely on the C and R implementations of the 
+#    algorithms for exact HWE tests as described in Wigginton, et al. (2005), 
+#    which were originally written by Jan Wigginton and released into the 
+#    public domain.  C, R, and Fortran implementations of these algorithms 
+#    are available for download at:
+#       http://www.sph.umich.edu/csg/abecasis/Exact/
+#
+# Citation: 
+#    This code implements an exact SNP test of Hardy-Weinberg Equilibrium as described in
+#    Wigginton, JE, Cutler, DJ, and Abecasis, GR (2005) A Note on Exact Tests of 
+#    Hardy-Weinberg Equilibrium. American Journal of Human Genetics. 76(5): 887 - 893.
+#    Please cite this work when using this code.
+#
+# Usage: 
+#    This software is a Perl library, intended to be used within other programs.
+#    To use this library directly from the command-line, you can run Perl with a 
+#    one-line program such as:
+#
+#       perl -e 'require "snphwe.pl"; print(snphwe(@ARGV))' 57 14 50
+#
+#    Where the three numbers at the end are the observed counts of the three 
+#    genotypes: first the heterozygote count, then one of the homozygote genotype 
+#    counts, and finally the other homozygote genotype count, in that order.  
+#
+#    The example above, which would be for 57 Aa, 14 aa, and 50 AA, should print 
+#    the resulting P-value, which in this case is 0.842279756570793, to the 
+#    standard output.
+#
+# Note:
+#    Code for the alternate P-value calculation based on p_hi/p_lo that was 
+#    included in the Wigginton, et al. C and R implementations (but was 
+#    disabled) has been included here, but has not been tested.  It is 
+#    therefore commented out.  If you wish to make use of this code, please 
+#    verify it functions as desired.
+#
+    my $obs_hets = shift;
+    my $obs_hom1 = shift;
+    my $obs_hom2 = shift;
+
+    if($obs_hom1 < 0 || $obs_hom2 < 0 || $obs_hets <0) {
+	return(-1);
+    }
+
+    # rare homozygotes
+    my $obs_homr;
+
+    # common homozygotes
+    my $obs_homc;
+    if($obs_hom1 < $obs_hom2) {
+	$obs_homr = $obs_hom1;
+	$obs_homc = $obs_hom2;
+    } else {
+	$obs_homr = $obs_hom2;
+	$obs_homc = $obs_hom1;
+    }
+
+    # number of rare allele copies
+    my $rare_copies = 2 * $obs_homr + $obs_hets;
+
+    # total number of genotypes
+    my $genotypes = $obs_homr + $obs_homc + $obs_hets;
+
+    if($genotypes <= 0) {
+	return(-1);
+    }
     
+    # Initialize probability array
+    my @het_probs;
+    for(my $i=0; $i<=$rare_copies; $i++) {
+	$het_probs[$i] = 0.0;
+    }
+
+    # start at midpoint
+    my $mid = int($rare_copies * (2 * $genotypes - $rare_copies) / (2 * $genotypes));
+
+    # check to ensure that midpoint and rare alleles have same parity
+    if(($rare_copies & 1) ^ ($mid & 1)) {
+	$mid++;
+    }
+    
+    my $curr_hets = $mid;
+    my $curr_homr = ($rare_copies - $mid) / 2;
+    my $curr_homc = $genotypes - $curr_hets - $curr_homr;
+
+    $het_probs[$mid] = 1.0;
+    my $sum = $het_probs[$mid];
+    for($curr_hets = $mid; $curr_hets > 1; $curr_hets -= 2) {
+	$het_probs[$curr_hets - 2] = $het_probs[$curr_hets] * $curr_hets * ($curr_hets - 1.0) / (4.0 * ($curr_homr + 1.0) * ($curr_homc + 1.0));
+	$sum += $het_probs[$curr_hets - 2];
+
+	# 2 fewer heterozygotes for next iteration -> add one rare, one common homozygote
+	$curr_homr++;
+	$curr_homc++;
+    }
+
+    $curr_hets = $mid;
+    $curr_homr = ($rare_copies - $mid) / 2;
+    $curr_homc = $genotypes - $curr_hets - $curr_homr;
+    for($curr_hets = $mid; $curr_hets <= $rare_copies - 2; $curr_hets += 2) {
+	$het_probs[$curr_hets + 2] = $het_probs[$curr_hets] * 4.0 * $curr_homr * $curr_homc / (($curr_hets + 2.0) * ($curr_hets + 1.0));
+	$sum += $het_probs[$curr_hets + 2];
+	
+	# add 2 heterozygotes for next iteration -> subtract one rare, one common homozygote
+	$curr_homr--;
+	$curr_homc--;
+    }
+
+    for(my $i=0; $i<=$rare_copies; $i++) {
+	$het_probs[$i] /= $sum;
+    }
+
+    # alternate p-value calculation for p_hi/p_lo
+#    my $p_hi = $het_probs[$obs_hets];
+#    for(my $i=$obs_hets+1; $i<=$rare_copies; $i++) {
+#	$p_hi += $het_probs[$i];
+#    }
+#    
+#    my $p_lo = $het_probs[$obs_hets];
+#    for(my $i=$obs_hets-1; $i>=0; $i--) {
+#	$p_lo += $het_probs[$i];
+#    }
+#
+#    my $p_hi_lo;
+#    if($p_hi < $p_lo) {
+#	$p_hi_lo = 2 * $p_hi;
+#    } else {
+#	$p_hi_lo = 2 * $p_lo;
+#    }
+
+    # Initialise P-value 
+    my $p_hwe = 0.0;
+
+    # P-value calculation for p_hwe
+    for(my $i = 0; $i <= $rare_copies; $i++) {
+	if($het_probs[$i] > $het_probs[$obs_hets]) {
+	    next;
+	}
+	$p_hwe += $het_probs[$i];
+    }
+    
+    if($p_hwe > 1) {
+	$p_hwe = 1.0;
+    }
+
+    return($p_hwe);
 }
 
 sub filter {
@@ -260,7 +441,7 @@ sub filter {
     #CHROM POS ID REF ALT QUAL FILTER INFO FORMAT Indiv_genotypes ...
     #Genotypes:GT:PL:DP:SP:GQ ...
     
-    #Filter order: biallelic -> Q -> depth -> GQ -> coverage -> local Ho or Fis or MAF
+    #Filter order: biallelic -> Q -> depth -> GQ -> coverage -> local Ho or Fis or MAF -> hwe
     #-> missing rate -> global Ho or Fis or MAF.
     
     #################################################################
@@ -279,12 +460,13 @@ sub filter {
     undef @gts_total;
     my $cnt_Fis          = 0;
     my $cnt_Ho           = 0;
+    my $cnt_hwe          = 0;
     my $cnt_gmaf         = 0;
     my $cnt_lmaf->{$ref} = 0;
        $cnt_lmaf->{$alt} = 0;
     my $mono             = 0;
     next if $alt =~ /,|\./;                         # Skip non-biallelic loci.
-    next if (defined $minQ && $qual < $minQ);       # Minmum quality.
+    next if (defined($minQ) && $qual < $minQ);       # Minmum quality.
     my $recode = 0;                                 # Populations number of non-enough coverage. 
     my @formats = split(/:/, $format);              # Order of format:
     map { $fmt->{$formats[$_]} = $_;} 0..$#formats; # Geno => Order.
@@ -321,7 +503,7 @@ sub filter {
             
             #Other filter...
             ###### Depth ######
-            if ((defined $minDP && $DP < $minDP) or (defined $maxDP && $DP > $maxDP)) {
+            if ((defined($minDP) && $DP < $minDP) or (defined($maxDP) && $DP > $maxDP)) {
                 
                 $geno[$fmt->{'GT'}] = './.';
                 $miss++;
@@ -331,7 +513,7 @@ sub filter {
             }
             
             ###### GQ ######
-            if (defined $minGQ && $GQ < $minGQ) {
+            if (defined($minGQ) && $GQ < $minGQ) {
                 $geno[$fmt->{'GT'}] = './.';
                 $miss++;
                 $tot_miss++;
@@ -353,33 +535,35 @@ sub filter {
             $recode++ if $cov_ratio < $cov;
             last if $cov_ratio < $cov;
         }
-        
-        #next if $miss == $total;
-        
         ###### Local ######
-        if ((!$global && (defined $het or defined $fis)) or $l_maf) {
+        if ((!$global && (defined($het) or defined ($fis))) or defined($l_maf) or defined($hwe)) {
         
-            my ($Ho, $He, $Fis, $maf, $flag) = calc_stat(\@gts, $ref, $alt); #Each population.
+            my ($Ho, $He, $Fis, $maf, $flag, $p_hwe) = calc_stat(\@gts, $ref, $alt); #Each population.
             $maf = ($l_maf && $l_maf > 1) ? 2*$l_N*$maf : $maf; # allele count or freq.
-            ###### Het ######
-            if (defined $het && $Ho > $het) {
-                $cnt_Ho++;
-                last;
+            if (!$global) {
+                ###### Het ######
+                if (defined($het) && $Ho > $het) {
+                    $cnt_Ho++;
+                    last;
+                }
+            
+                ###### Fis ######
+                if (defined($fis) && abs($Fis) > $fis) {
+                    $cnt_Fis++;
+                    last;
+                }
+                ###### HWE ######
+                $cnt_hwe++ if ($p_hwe < $hwe);
             }
-        
-            ###### Fis ######
-            if (defined $fis && abs($Fis) > $fis) {
-                $cnt_Fis++;
-                last;
-            }
-        
             ###### MAF ######
             $cnt_lmaf->{$flag}++ if $l_maf && $maf < $l_maf;
+
         }
         
     }
     
     next if ($recode  > 0 || $cnt_Ho  > 0 || $cnt_Fis > 0);
+    next if (defined($hwe) && $cnt_hwe >= $num_pops);
     
     ###### Global missing rate #######
     my $g_N = $tot_indiv - $tot_miss; # global num of individuals.
@@ -389,34 +573,36 @@ sub filter {
     }
     
     ###### Global ######
-    if ($global or $g_maf) {
+    if (defined($global) or defined($g_maf)) {
         
-        my ($Ho, $He, $Fis, $maf, $flag) = calc_stat(\@gts_total, $ref, $alt);
+        my ($Ho, $He, $Fis, $maf, $flag, $p_hwe) = calc_stat(\@gts_total, $ref, $alt);
         $maf = ($g_maf && $g_maf > 1) ? 2*$g_N*$maf : $maf;
-        ###### Het ######
-        if ($global && defined $het && $Ho > $het) {
-            $cnt_Ho++;
-            next;
-        }
-        
-        ###### Fis ######
-        if ($global && defined $fis && abs($Fis) > $fis) {
-            $cnt_Fis++;
-            next;
+        if ($global) {
+            ###### Het ######
+            if (defined($het) && $Ho > $het) {
+                $cnt_Ho++;
+                next;
+            }
+            ###### Fis ######
+            if (defined($fis) && abs($Fis) > $fis) {
+                $cnt_Fis++;
+                next;
+            }
+            ###### HWE ######
+            if (defined($hwe) && $p_hwe < $hwe) {$cnt_hwe++;next;}
         }
         
         ###### MAF ######
-        $cnt_gmaf++ if defined $g_maf && $maf < $g_maf;
+        $cnt_gmaf++ if defined($g_maf) && $maf < $g_maf;
         if (not defined $l_maf) {
-            $cnt_lmaf->{$ref} = scalar(@order);
-            $cnt_lmaf->{$alt} = scalar(@order);
+            $cnt_lmaf->{$ref} = $num_pops;
+            $cnt_lmaf->{$alt} = $num_pops;
         }
         
     }
        
     next if ($cnt_Ho   > 0 || $cnt_Fis  > 0);
-    next if $cnt_gmaf > 0 && ($cnt_lmaf->{$ref} == scalar(@order) or $cnt_lmaf->{$alt} == scalar(@order));
-    
+    next if $cnt_gmaf > 0 && ($cnt_lmaf->{$ref} == $num_pops or $cnt_lmaf->{$alt} == $num_pops);
     ## check if is snp.
     next if scalar(uniq @gts_total) == 1;
     
