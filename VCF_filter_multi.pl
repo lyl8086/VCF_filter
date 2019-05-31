@@ -15,8 +15,14 @@ my ($cnt, $snp_total) :shared;
 my (@header, $pops, @order, $in_fh, $out_fh, %samples, $tot_indiv, $num_pops);
 my ($cmd, $sort, $infile, $outfile, $popmap, $minDP, $maxDP, $het, $fis, $hwe);
 my ($cov, $tot_cov, $minGQ, $minQ, $l_maf, $g_maf, $global, $num_threads, $help);
-
+my ($totDP,$avgDP, $biallelic, $polymorphic, $rmIndel);
+# Initialize
 $num_threads = 1;
+$cnt         = 0;
+$snp_total   = 0;
+$biallelic   = 1;
+$polymorphic = 1;
+$rmIndel     = 1;
 
 my $x ='#';
 GetOptions (
@@ -27,22 +33,27 @@ GetOptions (
     "MaxDP=s"       => \$maxDP,
     "Het=f"         => \$het,
     "Fis=f"         => \$fis,
-    "phwe=f"          => \$hwe,
+    "phwe=f"        => \$hwe,
     "GQ=i"          => \$minGQ,
     "Q=i"           => \$minQ,
     "localMAF=f"    => \$l_maf,
     "globalMAF=f"   => \$g_maf,
     "filter:1"      => \$global,
     "sort:1"        => \$sort,
-    "threads=i"     => \$num_threads,
+    "Threads=i"     => \$num_threads,
     "coverage=f"    => \$cov,
     "Cov=f"         => \$tot_cov,
+    "totDP=s"       => \$totDP,
+    "avgDP=s"       => \$avgDP,
+    "reNb:0"        => \$biallelic,
+    "reMo:0"        => \$polymorphic,
+    "reIn:0"        => \$rmIndel,
     "help:1"        => \$help
 ) or die ("Error in command line arguments\n");
 
 my $usage = 
 '   
-    Options [* required]:
+    Options [* required, case sensitive]:
     
     --i *input vcf file.
     --o *output file.
@@ -59,9 +70,15 @@ my $usage =
     --l  Local MAF.
     --p  p-value for hwe.
     --f  apply the filter (Ho and Fis) on each site instead of each population.
-    --t  number of threads.
+    --T  number of threads.
     --s  sort the final vcf file.
     --h  help.
+    --totDP total Depth range for eacn site, [min:max].
+    --avgDP average Depth range for each site, [min:max].
+    --reNb  retain non-bi-allelic sites.
+    --reMo  retain monomorphic sites.
+    --reIn  retain indels.
+
 ';
     
 die "$usage\n" if $help or !($infile && $outfile && $popmap);
@@ -97,8 +114,13 @@ my $para  = "CMD: $abs_path ".join(' ', @args);
    $para .= sprintf "\t%-15s : %-10s\n", $H, $het if $het;
    $para .= sprintf "\t%-15s : %-10s\n", $F, $fis if $fis;
    $para .= sprintf "\t%-15s : %-10s\n", 'p-value for hwe test', $hwe if $hwe;
+   $para .= sprintf "\t%-15s : %-10s\n", 'Total Depth', $totDP if $totDP;
+   $para .= sprintf "\t%-15s : %-10s\n", 'Average Depth', $avgDP if $avgDP;
    $para .= sprintf "\t%-15s : %-10s\n", 'Global MAF', $g_maf if $g_maf;
    $para .= sprintf "\t%-15s : %-10s\n", 'Local MAF', $l_maf if $l_maf;
+   $para .= sprintf "\t%-15s\n", 'Only keep polymorphic sites' if $polymorphic;
+   $para .= sprintf "\t%-15s\n", 'Only keep bi-allelic sites' if $biallelic;
+   $para .= sprintf "\t%-15s\n", 'Remove Indels' if $rmIndel;
 use warnings;
 open($out_fh, ">$outfile.log") or die "$!";
 print $out_fh $para;
@@ -117,7 +139,7 @@ my $head = 0;
 while (<$in_fh>) {
     #Just output number of SNPs if nothing need to be filtered.
     unless ($cov || $minGQ || $minDP || $maxDP || $het || $fis
-    || $g_maf || $l_maf || $minQ || $tot_cov || $hwe) {
+    || $g_maf || $l_maf || $minQ || $tot_cov || $hwe || $polymorphic || $biallelic || $rmIndel) {
     
         print $out_fh $_;
         next if /^##|^$/;
@@ -152,24 +174,27 @@ while (<$in_fh>) {
         
         ##################
         
-        open(my $pop, "$popmap") or die "No PopMap file!";
-        while (<$pop>) {
+        open(my $pop_fh, "$popmap") or die "No PopMap file!";
+        while (<$pop_fh>) {
             next if /^#|^$/;
             $_ =~ s/[\r\n]|^\s+|\s+$//g;
             my @part = split;
-            push @order, $part[1];
-            push @{$pops->{$part[1]}}, $samples{$part[0]}; #Pop name => @indiv rank. 
+            my $cpop = $part[1];
+            my $cind = $part[0];
+            die "No such individual $cind in VCF\n" if not defined $samples{$cind};
+            push @order, $cpop;
+            push @{$pops->{$cpop}}, $samples{$cind}; #Pop name => @indiv rank. 
             
         }
-        close $pop;
-        die "Header is wrong!" if @order != (@header -9);
+        close $pop_fh;
+        #die "Header is wrong!" if @order != (@header -9);
         $tot_indiv = @order; 
         @order     = uniq @order;
         $num_pops  = scalar(@order);
         ###### Print header ######
         print STDERR "PopMap($num_pops):\n";
         print $out_fh join("\t", @header[0..8]);
-        foreach $pop (@order) {
+        foreach my $pop (@order) {
             my @indivs     = @header[@{$pops->{$pop}}];
             my $num_indivs = scalar(@indivs);
             print $out_fh "\t", join("\t", @indivs);
@@ -241,7 +266,7 @@ sub calc_stat {
         # unphased or phased.
         if ($gt eq '0/0' || $gt eq '0|0') {$allele->{$ref} += 2; $obs_hom1++;}
         if ($gt eq '1/1' || $gt eq '1|1') {$allele->{$alt} += 2; $obs_hom2++;}
-        if ($gt eq '0/1' || $gt eq '0|1' || $gt eq '1|0') {
+        if ($gt eq '0/1' || $gt eq '0|1' || $gt eq '1|0' || $gt eq '1/0') {
             $allele->{$ref}++; 
             $allele->{$alt}++;
             $allele->{'het'}++;
@@ -453,11 +478,11 @@ sub filter {
         $snp_total++; # Number of total SNPs.
     }
     
-    my $tot_miss = 0; # Missing rate for a site.
     my ($chrom, $pos, $id, $ref, $alt, $qual, $filter, $info, $format, @genos) = split(/\t/, $vcfline);
-    my ($fmt, @filtered, @gts_total);
-    undef @filtered;
-    undef @gts_total;
+    my $fmt;
+    my @filtered         = ();
+    my @gts_total        = ();
+    my $tot_miss         = 0; # Missing rate for a site.
     my $cnt_Fis          = 0;
     my $cnt_Ho           = 0;
     my $cnt_hwe          = 0;
@@ -465,8 +490,10 @@ sub filter {
     my $cnt_lmaf->{$ref} = 0;
        $cnt_lmaf->{$alt} = 0;
     my $mono             = 0;
-    next if $alt =~ /,|\./;                         # Skip non-biallelic loci.
-    next if (defined($minQ) && $qual < $minQ);       # Minmum quality.
+    my $tDP              = 0;
+    next if ($biallelic && $alt =~ /\,|\./);        # Skip non-biallelic loci.
+    next if ($rmIndel && ($ref =~ /\w{2,}/ || $alt =~ /\w{2,}/)); # remove indel.
+    next if (defined($minQ) && $qual < $minQ);      # Minmum quality.
     my $recode = 0;                                 # Populations number of non-enough coverage. 
     my @formats = split(/:/, $format);              # Order of format:
     map { $fmt->{$formats[$_]} = $_;} 0..$#formats; # Geno => Order.
@@ -500,6 +527,7 @@ sub filter {
             
             my $DP   = $geno[$fmt->{'DP'}];
             my $GQ   = $geno[$fmt->{'GQ'}] if $fmt->{'GQ'};
+            $tDP += $DP; # total depth.
             
             #Other filter...
             ###### Depth ######
@@ -533,7 +561,9 @@ sub filter {
             
             $cov_ratio = $cov > 1 ? $l_N : $l_N/$total;
             $recode++ if $cov_ratio < $cov;
-            last if $cov_ratio < $cov;
+            last if $cov_ratio < $cov; # next site.
+        } else {
+            next if $l_N == 0; # next population.
         }
         ###### Local ######
         if ((!$global && (defined($het) or defined ($fis))) or defined($l_maf) or defined($hwe)) {
@@ -553,7 +583,7 @@ sub filter {
                     last;
                 }
                 ###### HWE ######
-                $cnt_hwe++ if ($p_hwe < $hwe);
+                $cnt_hwe++ if (defined ($hwe) && $p_hwe < $hwe);
             }
             ###### MAF ######
             $cnt_lmaf->{$flag}++ if $l_maf && $maf < $l_maf;
@@ -570,6 +600,28 @@ sub filter {
     if (defined $tot_cov) {
         my $cov_ratio = $tot_cov > 1 ? $g_N : $g_N/$tot_indiv;
         next if $cov_ratio < $tot_cov;
+    }
+    ###### total depth and average depth ######
+    if (defined $totDP) {
+        if ($totDP =~ /(\d+):(\d+)/) {
+            my $low  = $1;
+            my $high = $2;
+            next if ($tDP > $high || $tDP < $low);
+        } else {
+            next if $tDP < $totDP;
+        }
+    }
+    
+    if (defined $avgDP) {
+        my $aDP = $tDP / $g_N; # average depth.
+        if ($avgDP =~ /(\d+):(\d+)/) {
+            my $low  = $1;
+            my $high = $2;
+            next if ( $aDP > $high || $aDP < $low);
+        } else {
+            next if $aDP < $totDP;
+        }
+    
     }
     
     ###### Global ######
@@ -604,7 +656,7 @@ sub filter {
     next if ($cnt_Ho   > 0 || $cnt_Fis  > 0);
     next if $cnt_gmaf > 0 && ($cnt_lmaf->{$ref} == $num_pops or $cnt_lmaf->{$alt} == $num_pops);
     ## check if is snp.
-    next if scalar(uniq @gts_total) == 1;
+    next if ($polymorphic && scalar(uniq @gts_total) == 1);
     
     ###### Print each snp sites ######
     lock(@out);
