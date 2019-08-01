@@ -231,9 +231,9 @@ print STDERR "\ndone.\n";
 if ($sort) {
     print STDERR "Sorting file...";
     if (substr($outfile, -2) eq 'gz') {
-        `(zgrep '^#' $outfile; zgrep -v '^#' $outfile | sort -k1,1n -k2,2n ) | gzip -c >$outfile.1 && mv $outfile.1 $outfile`;
+        `(zgrep '^#' $outfile; zgrep -v '^#' $outfile | sort -k1,1 -k2,2n ) | gzip -c >$outfile.1 && mv $outfile.1 $outfile`;
     } else {
-        `(grep '^#' $outfile; grep -v '^#' $outfile | sort -k1,1n -k2,2n) >$outfile.1 && mv $outfile.1 $outfile`;
+        `(grep '^#' $outfile; grep -v '^#' $outfile | sort -k1,1 -k2,2n) >$outfile.1 && mv $outfile.1 $outfile`;
     }
     print STDERR "done.\n";
 }
