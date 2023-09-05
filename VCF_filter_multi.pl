@@ -15,7 +15,8 @@ my ($cnt, $snp_total) :shared;
 my (@header, $pops, @order, $in_fh, $out_fh, %samples, $tot_indiv, $num_pops);
 my ($cmd, $sort, $infile, $outfile, $popmap, $minDP, $maxDP, $het, $fis, $hwe);
 my ($cov, $tot_cov, $minGQ, $minQ, $l_maf, $g_maf, $global, $num_threads, $help);
-my ($totDP,$avgDP, $biallelic, $polymorphic, $rmIndel);
+my ($totDP,$avgDP, $biallelic, $polymorphic, $rmIndel, $poly_thred);
+my $vcf_pre_header = '';
 # Initialize
 $num_threads = 1;
 $cnt         = 0;
@@ -48,6 +49,7 @@ GetOptions (
     "reNb:0"        => \$biallelic,
     "reMo:0"        => \$polymorphic,
     "reIn:0"        => \$rmIndel,
+	"rePo=f"        => \$poly_thred,
     "help:1"        => \$help
 ) or die ("Error in command line arguments\n");
 
@@ -73,12 +75,13 @@ my $usage =
     --T  number of threads.
     --s  sort the final vcf file.
     --h  help.
-    --totDP total Depth range for eacn site, [min:max].
+    --totDP total Depth range for each site, [min:max].
     --avgDP average Depth range for each site, [min:max].
     --reNb  retain non-bi-allelic sites.
     --reMo  retain monomorphic sites.
     --reIn  retain indels.
-
+    --rePo  threshold for polymorphic loci of each populations.
+	
 ';
     
 die "$usage\n" if $help or !($infile && $outfile && $popmap);
@@ -92,6 +95,10 @@ elsif (substr($infile, -2) eq '7z') {
     open($in_fh, "7zcat.sh $infile|") or die "$!";
     $max_per_batch = $file_stat[7]/1e6 > 100 ? 9999 : 999; # 100M
     }
+elsif (substr($infile, -3) eq 'bcf') {
+    open($in_fh, "bcftools convert --threads 8 -Ov $infile |") or die "$!";
+    $max_per_batch = $file_stat[7]/1e6 > 100 ? 9999 : 999; # 100M
+    }
 else {
     open($in_fh, "$infile") or die "$!";
     $max_per_batch = $file_stat[7]/1e6 > 1000 ? 9999 : 999; # 1G
@@ -103,24 +110,25 @@ my $H = $global? "Global Ho" : "MaxHo";
 my $F = $global? "Global Abs Fis" : "Abs Fis";
 my $para  = "CMD: $abs_path ".join(' ', @args);
    $para .= "\n\nParameters used:\n";
-   $para .= sprintf "\t%-15s : %-10s\n", 'File name', basename($infile);
-   $para .= sprintf "\t%-15s : %-10s\n", 'Out name', basename($outfile);
-   $para .= sprintf "\t%-15s : %-10s\n", 'Local coverage', $cov if $cov;
-   $para .= sprintf "\t%-15s : %-10s\n", 'Total coverage', $tot_cov if $tot_cov;
-   $para .= sprintf "\t%-15s : %-10s\n", 'MinGQ', $minGQ if $minGQ;
-   $para .= sprintf "\t%-15s : %-10s\n", 'MinQ', $minQ if $minQ;
-   $para .= sprintf "\t%-15s : %-10s\n", 'minDepth', $minDP if $minDP;
-   $para .= sprintf "\t%-15s : %-10s\n", 'MaxDP', $maxDP if $maxDP;
-   $para .= sprintf "\t%-15s : %-10s\n", $H, $het if $het;
-   $para .= sprintf "\t%-15s : %-10s\n", $F, $fis if $fis;
-   $para .= sprintf "\t%-15s : %-10s\n", 'p-value for hwe test', $hwe if $hwe;
-   $para .= sprintf "\t%-15s : %-10s\n", 'Total Depth', $totDP if $totDP;
-   $para .= sprintf "\t%-15s : %-10s\n", 'Average Depth', $avgDP if $avgDP;
-   $para .= sprintf "\t%-15s : %-10s\n", 'Global MAF', $g_maf if $g_maf;
-   $para .= sprintf "\t%-15s : %-10s\n", 'Local MAF', $l_maf if $l_maf;
-   $para .= sprintf "\t%-15s\n", 'Only keep polymorphic sites' if $polymorphic;
-   $para .= sprintf "\t%-15s\n", 'Only keep bi-allelic sites' if $biallelic;
-   $para .= sprintf "\t%-15s\n", 'Remove Indels' if $rmIndel;
+   $para .= sprintf "\t%-20s : %-10s\n", 'File name', basename($infile);
+   $para .= sprintf "\t%-20s : %-10s\n", 'Out name', basename($outfile);
+   $para .= sprintf "\t%-20s : %-10s\n", 'Local coverage', $cov if $cov;
+   $para .= sprintf "\t%-20s : %-10s\n", 'Total coverage', $tot_cov if $tot_cov;
+   $para .= sprintf "\t%-20s : %-10s\n", 'MinGQ', $minGQ if $minGQ;
+   $para .= sprintf "\t%-20s : %-10s\n", 'MinQ', $minQ if $minQ;
+   $para .= sprintf "\t%-20s : %-10s\n", 'minDepth', $minDP if $minDP;
+   $para .= sprintf "\t%-20s : %-10s\n", 'MaxDP', $maxDP if $maxDP;
+   $para .= sprintf "\t%-20s : %-10s\n", $H, $het if $het;
+   $para .= sprintf "\t%-20s : %-10s\n", $F, $fis if $fis;
+   $para .= sprintf "\t%-20s : %-10s\n", 'p-value for hwe test', $hwe if $hwe;
+   $para .= sprintf "\t%-20s : %-10s\n", 'Total Depth', $totDP if $totDP;
+   $para .= sprintf "\t%-20s : %-10s\n", 'Average Depth', $avgDP if $avgDP;
+   $para .= sprintf "\t%-20s : %-10s\n", 'Global MAF', $g_maf if $g_maf;
+   $para .= sprintf "\t%-20s : %-10s\n", 'Local MAF', $l_maf if $l_maf;
+   $para .= sprintf "\t%-20s : %-10s\n", 'Local polymorphic', $poly_thred if defined $poly_thred;
+   $para .= sprintf "\t%-20s\n", 'Only keep polymorphic sites' if $polymorphic;
+   $para .= sprintf "\t%-20s\n", 'Only keep bi-allelic sites' if $biallelic;
+   $para .= sprintf "\t%-20s\n", 'Remove Indels' if $rmIndel;
 use warnings;
 open($out_fh, ">$outfile.log") or die "$!";
 print $out_fh $para;
@@ -130,7 +138,8 @@ print STDERR "Using $num_threads threads, $max_per_batch per batch...\n\n";
 print STDERR "$para\n";
 
 if (substr($outfile, -2) eq 'gz') {
-    open($out_fh, "|gzip >$outfile") or die "$!";
+    # use bgzip.
+    open($out_fh, "|bgzip -c >$outfile") or die "$!";
     } else {
     open($out_fh, ">$outfile") or die "$!";
 }
@@ -153,8 +162,11 @@ while (<$in_fh>) {
         $snp_total = $cnt;
         next;
     }
-
-    next if /^##|^$/;
+    next if /^$/;
+    if (/^##/) {
+        $vcf_pre_header .= $_;
+        next;
+    }
     next if $head > 0 && /^#/; 
     if ($head ==0 && /^#/) {
         chomp;
@@ -193,6 +205,7 @@ while (<$in_fh>) {
         $num_pops  = scalar(@order);
         ###### Print header ######
         print STDERR "PopMap($num_pops):\n";
+        print $out_fh $vcf_pre_header;
         print $out_fh join("\t", @header[0..8]);
         foreach my $pop (@order) {
             my @indivs     = @header[@{$pops->{$pop}}];
@@ -231,9 +244,10 @@ print STDERR "\ndone.\n";
 if ($sort) {
     print STDERR "Sorting file...";
     if (substr($outfile, -2) eq 'gz') {
-        `(zgrep '^#' $outfile; zgrep -v '^#' $outfile | sort -k1,1 -k2,2n ) | gzip -c >$outfile.1 && mv $outfile.1 $outfile`;
+        # use bgzip.
+        `(zgrep '^#' $outfile; zgrep -v '^#' $outfile | sort -T ./ --parallel=$num_threads -k1,1V -k2,2n ) | bgzip --threads 4 -c >$outfile.1 && mv $outfile.1 $outfile`;
     } else {
-        `(grep '^#' $outfile; grep -v '^#' $outfile | sort -k1,1 -k2,2n) >$outfile.1 && mv $outfile.1 $outfile`;
+        `(grep '^#' $outfile; grep -v '^#' $outfile | sort -T ./ --parallel=$num_threads -k1,1V -k2,2n) >$outfile.1 && mv $outfile.1 $outfile`;
     }
     print STDERR "done.\n";
 }
@@ -485,15 +499,24 @@ sub filter {
     my $tot_miss         = 0; # Missing rate for a site.
     my $cnt_Fis          = 0;
     my $cnt_Ho           = 0;
+	my $cnt_poly         = 0; # not a polymorphic loci for one population.
     my $cnt_hwe          = 0;
     my $cnt_gmaf         = 0;
     my $cnt_lmaf->{$ref} = 0;
        $cnt_lmaf->{$alt} = 0;
     my $mono             = 0;
     my $tDP              = 0;
+    next if not ($filter eq "." || $filter eq "PASS");
     next if ($biallelic && $alt =~ /\,|\./);        # Skip non-biallelic loci.
     next if ($rmIndel && ($ref =~ /\w{2,}/ || $alt =~ /\w{2,}/)); # remove indel.
-    next if (defined($minQ) && $qual < $minQ);      # Minmum quality.
+    if(defined($minQ)) {
+        # Minmum quality.
+        if($qual eq '.') {
+            print STDERR "No Quality value in VCF lines.\n";
+        } else {
+            next if ($qual < $minQ);
+        }
+    }
     my $recode = 0;                                 # Populations number of non-enough coverage. 
     my @formats = split(/:/, $format);              # Order of format:
     map { $fmt->{$formats[$_]} = $_;} 0..$#formats; # Geno => Order.
@@ -511,7 +534,7 @@ sub filter {
             my $geno0= $genos[$rank-9]; # Genotype of original.
             my @geno = split(/:/, $geno0);
             if (not defined $geno[$fmt->{'GT'}]) { die "GT field is requred!\n";}
-            if (not defined $geno[$fmt->{'DP'}]) { die "DP field is requred!\n";}
+            #if (not defined $geno[$fmt->{'DP'}]) { die "DP field is requred!\n";}
             my $GT   = $geno[$fmt->{'GT'}];
             
             #
@@ -525,7 +548,7 @@ sub filter {
                 next;
             }
             
-            my $DP   = $geno[$fmt->{'DP'}];
+            my $DP   = $geno[$fmt->{'DP'}] if $fmt->{'DP'};
             my $GQ   = $geno[$fmt->{'GQ'}] if $fmt->{'GQ'};
             $tDP += $DP; # total depth.
             
@@ -569,7 +592,8 @@ sub filter {
         if ((!$global && (defined($het) or defined ($fis))) or defined($l_maf) or defined($hwe)) {
         
             my ($Ho, $He, $Fis, $maf, $flag, $p_hwe) = calc_stat(\@gts, $ref, $alt); #Each population.
-            $maf = ($l_maf && $l_maf > 1) ? 2*$l_N*$maf : $maf; # allele count or freq.
+            my $mac = sprintf "%.1f", 2*$l_N*$maf; # try to not lose precision.
+			$maf = ($l_maf && $l_maf > 1) ? $mac : $maf; # allele count or freq.
             if (!$global) {
                 ###### Het ######
                 if (defined($het) && $Ho > $het) {
@@ -589,10 +613,20 @@ sub filter {
             $cnt_lmaf->{$flag}++ if $l_maf && $maf < $l_maf;
 
         }
+		# polymorphic loci of each population.
+		if (defined $poly_thred) {
+			my ($Ho, $He, $Fis, $maf, $flag, $p_hwe) = calc_stat(\@gts, $ref, $alt);
+			my $mac = sprintf "%.1f", 2*$l_N*$maf;
+			my $maf_= $poly_thred >= 1 ? $mac : $maf;
+			if ($maf_ < $poly_thred) {
+				$cnt_poly++;
+				last;
+			}
+		}
         
     }
     
-    next if ($recode  > 0 || $cnt_Ho  > 0 || $cnt_Fis > 0);
+    next if ($recode  > 0 || $cnt_Ho  > 0 || $cnt_Fis > 0 || $cnt_poly > 0);
     next if (defined($hwe) && $cnt_hwe >= $num_pops);
     
     ###### Global missing rate #######
