@@ -2,54 +2,101 @@
 A multi-threading versatile filter for VCF file, adapt especially for population genetic analysis.
 
 ## Usage
-- --i [required]
-    input vcf/bcf file, gzipped accepted.
-- --o [required]
-    output vcf file.
-- --P [required]
-    a popMap file with two colums, corresponding to individual and population name, separated by tab, see [popmap.txt](samples/popmap.txt).
-- --c
-    individual coverage for each population, can be a ratio (<=1) or number (>1).
-- --C
-    total genotyping rate for a site, can be a ratio (<=1) or number (>1).
-- --m
-    minimum depth for each individual genotype.
-- --M
-    maximum depth for a individual genotype.
-- --H
-    maximum observed heterozygosity (Ho) of each population.
-- --F
-    absolute maximum inbreeding coefficient (Fis) of each population.
-- --G
-    minimum Genotype quality (GQ).
-- --Q
-    minimum quality for each SNP (Q).
-- --g
-    global minor allele frequncy for a site.
-- --l
-    local minor allele frequncy, if a population has this many minor allele, evaluated by the given value, then retain this site.
-- --p
-    sites with a p-value below the threshold defined by this option are taken to be out of HWE, and therefore excluded.
-- --f
-    apply the filter (--H and --F) on each site instead of each population.
-- --T
-    number of threads.
-- --s
-    sort the final vcf file, recommond on.
-- --h
-    help message.
-- --totDP
-    total Depth range for each site, [min:max], e.g., 10:100 means the total depth for this site should between 10 and 100.
-- --avgDP
-    average Depth range for each site, [min:max], e.g., 10:100 means the average depth for this site should between 10 and 100.
-- --reNb
-    retain non-bi-allelic sites, default unset.
-- --reMo
-    retain monomorphic sites, default unset.
-- --reIn  
-    retain indels, defalt unset.
-- --rePo
-    threshold to define a polymorphic loci of each populations, should be a ratio.
+**--i [required]**
+
+input vcf/bcf file, gzipped accepted.
+
+**--o [required]**
+
+output vcf file.
+
+**--P [required]**
+
+a popMap file with two colums, corresponding to individual and population name, separated by tab, see [popmap.txt](samples/popmap.txt).
+
+**--c**
+
+individual coverage for each population, can be a ratio (<=1) or number (>1).
+
+**--C**
+
+total genotyping rate for a site, can be a ratio (<=1) or number (>1).
+
+**--m**
+
+minimum depth for each individual genotype.
+
+**--M**
+
+maximum depth for a individual genotype.
+
+**--H**
+
+maximum observed heterozygosity (Ho) of each population.
+
+**--F**
+
+absolute maximum inbreeding coefficient (Fis) of each population.
+
+**--G**
+
+minimum Genotype quality (GQ).
+
+**--Q**
+
+minimum quality for each SNP (Q).
+
+**--g**
+
+global minor allele frequncy for a site.
+
+**--l**
+
+local minor allele frequncy, if a population has this many minor allele, evaluated by the given value, then retain this site.
+
+**--p**
+
+sites with a p-value below the threshold defined by this option are taken to be out of HWE, and therefore excluded.
+
+**--f**
+
+apply the filter (--H and --F) on each site instead of each population.
+
+**--T**
+
+number of threads.
+
+**--s**
+
+sort the final vcf file, recommond on.
+
+**--h**
+
+help message.
+
+**--totDP**
+
+total Depth range for each site, [min:max], e.g., 10:100 means the total depth for this site should between 10 and 100.
+
+**--avgDP**
+
+average Depth range for each site, [min:max], e.g., 10:100 means the average depth for this site should between 10 and 100.
+
+**--reNb**
+
+retain non-bi-allelic sites, default unset.
+
+**--reMo**
+
+retain monomorphic sites, default unset.
+
+**--reIn**
+
+retain indels, defalt unset.
+
+**--rePo**
+
+threshold to define a polymorphic loci of each populations, should be a ratio.
 
 
 ## Example usage
